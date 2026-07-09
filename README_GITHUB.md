@@ -10,6 +10,7 @@ Microreview is a local Windows desktop app for reviewing student practice materi
 - The review workspace only shows questions that have matched submitted materials or existing grading history.
 - Question titles are shown as the formal practice names, for example `1. 爱国主义教育实践`.
 - Save and reload local grading records across semesters.
+- Reload exported score records from CSV or XLSX files to continue grading in a later semester.
 - Open a grading history window to inspect previous records.
 - Export all scores, completion status, notes, and totals to CSV.
 
@@ -51,7 +52,7 @@ Do not move `Microreview.exe` out of the `dist/Microreview` folder because it de
 Requirements:
 
 ```powershell
-python -m pip install customtkinter pyinstaller pillow
+python -m pip install customtkinter pyinstaller pillow openpyxl
 ```
 
 Build:

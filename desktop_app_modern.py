@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+import openpyxl
 
 
 APP_TITLE = "Microreview"
@@ -349,12 +350,31 @@ class ReviewApp(ctk.CTk):
         messagebox.showinfo(APP_TITLE, "当前学生名单、材料路径和批改记录已保存。")
 
     def load_saved_records(self):
-        self.load_data()
-        if self.material_folder:
-            self.index_material_files()
-            self.sync_material_submissions()
+        path = filedialog.askopenfilename(
+            title="\u8bfb\u53d6\u5386\u53f2\u6210\u7ee9\u8868",
+            filetypes=[("\u6210\u7ee9\u8868", "*.csv *.xlsx"), ("CSV \u8868\u683c", "*.csv"), ("Excel \u8868\u683c", "*.xlsx"), ("\u6240\u6709\u6587\u4ef6", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            rows = self.read_score_table(path)
+            students, scores = self.parse_score_records(rows)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"\u8bfb\u53d6\u5931\u8d25\uff1a{exc}")
+            return
+        if not students:
+            messagebox.showwarning(APP_TITLE, "\u8868\u683c\u4e2d\u6ca1\u6709\u8bc6\u522b\u5230\u6709\u6548\u5b66\u751f\u8bb0\u5f55\u3002")
+            return
+        self.students = students
+        self.scores = scores
+        self.current_index = 0
+        self.material_folder = ""
+        self.material_files = []
+        self.expanded_grades = set()
+        self.grade_state_initialized = False
+        self.save_data()
         self.refresh_all()
-        messagebox.showinfo(APP_TITLE, "已读取上一次保存的批改记录。")
+        messagebox.showinfo(APP_TITLE, f"\u5df2\u4ece\u6210\u7ee9\u8868\u8bfb\u53d6 {len(students)} \u540d\u5b66\u751f\u7684\u6279\u6539\u8bb0\u5f55\u3002\n\u73b0\u5728\u53ef\u4ee5\u91cd\u65b0\u9009\u62e9\u6750\u6599\u6587\u4ef6\u5939\u7ee7\u7eed\u6279\u6539\u3002")
 
     def ensure_record(self, student_id):
         if student_id not in self.scores:
@@ -398,6 +418,54 @@ class ReviewApp(ctk.CTk):
             except UnicodeError:
                 continue
         raise ValueError("无法读取 CSV 文件。")
+
+    def cell_text(self, value):
+        if value is None:
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
+    def read_score_table(self, path):
+        suffix = Path(path).suffix.lower()
+        if suffix == ".xlsx":
+            workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
+            sheet = workbook.active
+            return [[self.cell_text(cell) for cell in row] for row in sheet.iter_rows(values_only=True)]
+        return self.read_csv(path)
+
+    def parse_score_records(self, rows):
+        if len(rows) < 2:
+            return [], {}
+        headers = [self.cell_text(cell).lstrip("\\ufeff") for cell in rows[0]]
+        lookup = {header: index for index, header in enumerate(headers)}
+        student_id_key = "\u5b66\u53f7"
+        name_key = "\u59d3\u540d"
+        if student_id_key not in lookup or name_key not in lookup:
+            raise ValueError("\u6210\u7ee9\u8868\u8868\u5934\u5fc5\u987b\u5305\u542b\u201c\u5b66\u53f7\u201d\u548c\u201c\u59d3\u540d\u201d\u3002")
+
+        students = []
+        scores = {}
+        seen = set()
+        for row in rows[1:]:
+            sid = self.cell_text(row[lookup[student_id_key]]) if len(row) > lookup[student_id_key] else ""
+            name = self.cell_text(row[lookup[name_key]]) if len(row) > lookup[name_key] else ""
+            if not sid or not name or sid in seen:
+                continue
+            questions = []
+            for number in range(1, QUESTION_COUNT + 1):
+                done_key = f"\u7b2c{number}\u9898\u5b8c\u6210"
+                score_key = f"\u7b2c{number}\u9898\u6210\u7ee9"
+                note_key = f"\u7b2c{number}\u9898\u5907\u6ce8"
+                done = self.cell_text(row[lookup[done_key]]) if done_key in lookup and len(row) > lookup[done_key] else ""
+                score = self.cell_text(row[lookup[score_key]]) if score_key in lookup and len(row) > lookup[score_key] else ""
+                note = self.cell_text(row[lookup[note_key]]) if note_key in lookup and len(row) > lookup[note_key] else ""
+                submitted = done in {"\u662f", "1", "true", "True", "TRUE", "\u5df2\u5b8c\u6210", "\u5df2\u63d0\u4ea4"} or bool(score or note)
+                questions.append({"submitted": submitted, "score": score, "note": note})
+            students.append({"name": name, "id": sid})
+            scores[sid] = {"questions": questions}
+            seen.add(sid)
+        return students, scores
 
     def parse_students(self, rows):
         if len(rows) < 2:
