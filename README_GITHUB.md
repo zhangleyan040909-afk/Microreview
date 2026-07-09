@@ -4,14 +4,14 @@ Microreview is a local Windows desktop app for reviewing student practice materi
 
 ## Main Features
 
-- Import a student CSV with `姓名` and `学号`.
+- Import a student CSV with `姓名` and `学号` columns.
 - Group students by grade using the first two digits of the student ID, for example `24721001 -> 2024级`.
-- Select a local materials folder and auto-match files by:
-  - student ID in the file name
-  - related keywords for questions 1-8
-- Review 8 questions for each student.
-- Record completion status, score, and notes.
-- Export all scores to CSV.
+- Select a local materials folder and auto-match files by student ID plus practice keywords.
+- The review workspace only shows questions that have matched submitted materials or existing grading history.
+- Question titles are shown as the formal practice names, for example `1. 爱国主义教育实践`.
+- Save and reload local grading records across semesters.
+- Open a grading history window to inspect previous records.
+- Export all scores, completion status, notes, and totals to CSV.
 
 ## Material Matching
 
@@ -31,7 +31,7 @@ Each file name should include the student ID and one of the keywords below:
 Examples:
 
 ```text
-24721001_张三_爱 国主义 教育实践.txt
+24721001_张三_爱国主义教育实践.txt
 张三 24721001 志愿-服务.docx
 24721001　劳动_实践.pdf
 ```
@@ -57,7 +57,7 @@ python -m pip install customtkinter pyinstaller pillow
 Build:
 
 ```powershell
-pyinstaller --noconfirm --onedir --windowed --name Microreview --icon microreview.ico desktop_app_modern.py
+python -m PyInstaller --noconfirm --onedir --windowed --name Microreview --icon microreview.ico desktop_app_modern.py
 ```
 
 The output will be:
@@ -66,7 +66,7 @@ The output will be:
 dist/Microreview/Microreview.exe
 ```
 
-## Notes
+## Local Data
 
 The app stores local working data in:
 

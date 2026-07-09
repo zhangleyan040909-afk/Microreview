@@ -31,6 +31,16 @@ QUESTION_KEYWORDS = {
     7: ["跨文化交流实践", "跨文化交流"],
     8: ["参与国家重大活动实践", "国家重大活动"],
 }
+QUESTION_TITLES = {
+    1: "爱国主义教育实践",
+    2: "志愿服务实践",
+    3: "劳动与生活实践",
+    4: "管理服务实践",
+    5: "勤工助学实践",
+    6: "应急救护实践",
+    7: "跨文化交流实践",
+    8: "参与国家重大活动实践",
+}
 COLORS = {
     "bg": "#F7F0E6",
     "card": "#FFF8EC",
@@ -126,7 +136,7 @@ class ReviewApp(ctk.CTk):
         self.visible_student_indexes = []
         self.expanded_grades = set()
         self.grade_state_initialized = False
-        self.question_widgets = []
+        self.question_widgets = {}
 
         self.load_data()
         self.show_splash()
@@ -225,8 +235,11 @@ class ReviewApp(ctk.CTk):
         actions.grid(row=0, column=1, padx=(8, 18), pady=12, sticky="e")
         self.toolbar_button(actions, "导入学生CSV", self.import_students, 0, secondary=True)
         self.toolbar_button(actions, "下载模板", self.export_template, 1, secondary=True)
-        self.toolbar_button(actions, "选择材料文件夹", self.choose_material_folder, 2, secondary=True)
-        self.toolbar_button(actions, "导出成绩表", self.export_scores, 3)
+        self.toolbar_button(actions, "读取记录", self.load_saved_records, 2, secondary=True)
+        self.toolbar_button(actions, "保存记录", self.save_records, 3, secondary=True)
+        self.toolbar_button(actions, "批改历史", self.open_history_window, 4, secondary=True)
+        self.toolbar_button(actions, "选择材料文件夹", self.choose_material_folder, 5, secondary=True)
+        self.toolbar_button(actions, "导出成绩表", self.export_scores, 6)
         self.folder_label = ctk.CTkLabel(top, text="未选择材料文件夹", font=FONT_SMALL, text_color=COLORS["muted"], anchor="e")
         self.folder_label.grid(row=1, column=1, padx=(8, 22), pady=(0, 4), sticky="e")
 
@@ -297,7 +310,7 @@ class ReviewApp(ctk.CTk):
             fg, hover, text_color = "#F7FAFE", "#EAF2FF", COLORS["text"]
         else:
             fg, hover, text_color = COLORS["primary"], COLORS["primary_hover"], "#FFFFFF"
-        ModernButton(master, text=text, command=command, fg_color=fg, hover_color=hover, text_color=text_color, width=108, height=36).grid(row=0, column=column, padx=5, pady=0)
+        ModernButton(master, text=text, command=command, fg_color=fg, hover_color=hover, text_color=text_color, width=96, height=36).grid(row=0, column=column, padx=5, pady=0)
 
     def nav_button(self, master, text, command, column, secondary=False):
         fg = "#F7FAFE" if secondary else COLORS["primary"]
@@ -328,6 +341,20 @@ class ReviewApp(ctk.CTk):
             "file_pattern": self.file_pattern,
         }
         data_file().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def save_records(self):
+        self.sync_material_submissions()
+        self.save_data()
+        self.refresh_all()
+        messagebox.showinfo(APP_TITLE, "当前学生名单、材料路径和批改记录已保存。")
+
+    def load_saved_records(self):
+        self.load_data()
+        if self.material_folder:
+            self.index_material_files()
+            self.sync_material_submissions()
+        self.refresh_all()
+        messagebox.showinfo(APP_TITLE, "已读取上一次保存的批改记录。")
 
     def ensure_record(self, student_id):
         if student_id not in self.scores:
@@ -405,8 +432,18 @@ class ReviewApp(ctk.CTk):
         if folder:
             self.material_folder = folder
             self.index_material_files()
+            self.sync_material_submissions()
             self.save_data()
             self.refresh_all()
+
+    def sync_material_submissions(self):
+        if not self.students or not self.material_files:
+            return
+        for student in self.students:
+            record = self.ensure_record(student["id"])
+            for index, question in enumerate(record["questions"]):
+                if self.find_file_for_student(student, index + 1):
+                    question["submitted"] = True
 
     def index_material_files(self):
         self.material_files = []
@@ -421,6 +458,7 @@ class ReviewApp(ctk.CTk):
     def refresh_all(self):
         if self.material_folder:
             self.index_material_files()
+            self.sync_material_submissions()
         self.refresh_student_list()
         self.refresh_current()
         self.refresh_questions()
@@ -538,7 +576,7 @@ class ReviewApp(ctk.CTk):
     def refresh_questions(self):
         for widget in self.question_frame.winfo_children():
             widget.destroy()
-        self.question_widgets = []
+        self.question_widgets = {}
         student = self.current_student()
         if not student:
             empty = ctk.CTkFrame(self.question_frame, fg_color="transparent")
@@ -547,19 +585,26 @@ class ReviewApp(ctk.CTk):
             ctk.CTkLabel(empty, text="CSV 至少包含两列：姓名、学号。导入后选择材料文件夹即可开始批阅。", font=FONT_BODY, text_color=COLORS["muted"]).grid(row=1, column=0)
             return
         record = self.ensure_record(student["id"])
-        for i, q in enumerate(record["questions"]):
-            self.add_question_card(i, q)
+        visible_questions = self.visible_questions_for_student(student, record)
+        if not visible_questions:
+            empty = ctk.CTkFrame(self.question_frame, fg_color="transparent")
+            empty.grid(row=0, column=0, pady=(210, 0), sticky="n")
+            ctk.CTkLabel(empty, text="暂未匹配到本次提交材料", font=FONT_TITLE, text_color=COLORS["text"]).grid(row=0, column=0, pady=(0, 10))
+            ctk.CTkLabel(empty, text="选择材料文件夹后，系统会按“学号 + 实践关键词”自动显示可批改题目；已有历史成绩也会保留显示。", font=FONT_BODY, text_color=COLORS["muted"]).grid(row=1, column=0)
+            return
+        for row, i in enumerate(visible_questions):
+            self.add_question_card(row, i, record["questions"][i])
 
-    def add_question_card(self, index, question):
+    def add_question_card(self, row_index, index, question):
         number = index + 1
         matched = self.find_file(number)
         required = number <= REQUIRED_COUNT
         frame = SoftCard(self.question_frame, radius=24)
-        frame.grid(row=index, column=0, sticky="ew", pady=8, padx=2)
+        frame.grid(row=row_index, column=0, sticky="ew", pady=8, padx=2)
         frame.card.grid_columnconfigure(3, weight=1)
         tag_bg = COLORS["warning_soft"] if required else COLORS["accent_soft"]
         tag_color = COLORS["warning_text"] if required else COLORS["accent"]
-        ctk.CTkLabel(frame.card, text=f"第 {number} 题", font=FONT_LATIN_SECTION, text_color=COLORS["text"]).grid(row=0, column=0, padx=(16, 8), pady=(14, 4), sticky="w")
+        ctk.CTkLabel(frame.card, text=f"{number}. {QUESTION_TITLES[number]}", font=FONT_SECTION, text_color=COLORS["text"]).grid(row=0, column=0, padx=(16, 8), pady=(14, 4), sticky="w")
         ctk.CTkLabel(frame.card, text="必修" if required else "选修 · 25分", font=FONT_LATIN_SMALL, text_color=tag_color, fg_color=tag_bg, corner_radius=12, padx=10, pady=3).grid(row=0, column=1, pady=(14, 4), sticky="w")
         file_text = f"已匹配：{matched.name}" if matched else "未匹配材料"
         ctk.CTkLabel(frame.card, text=file_text, font=FONT_LATIN_SMALL, text_color=COLORS["muted"], anchor="w").grid(row=1, column=0, columnspan=4, padx=16, pady=(0, 8), sticky="ew")
@@ -568,7 +613,7 @@ class ReviewApp(ctk.CTk):
         submitted = tk.BooleanVar(value=bool(question.get("submitted")))
         score = tk.StringVar(value=str(question.get("score", "")))
         note = tk.StringVar(value=question.get("note", ""))
-        self.question_widgets.append((submitted, score, note))
+        self.question_widgets[index] = (submitted, score, note)
         check = ctk.CTkCheckBox(frame.card, text="已提交/完成", variable=submitted, command=lambda i=index: self.update_question(i), font=FONT_BODY, corner_radius=8)
         check.grid(row=2, column=0, padx=16, pady=(4, 14), sticky="w")
         ctk.CTkLabel(frame.card, text="得分", font=FONT_BODY, text_color=COLORS["text"]).grid(row=2, column=1, padx=(4, 6), pady=(4, 14))
@@ -608,7 +653,7 @@ class ReviewApp(ctk.CTk):
 
     def update_question(self, index):
         student = self.current_student()
-        if not student or index >= len(self.question_widgets):
+        if not student or index not in self.question_widgets:
             return
         submitted, score_var, note = self.question_widgets[index]
         score = score_var.get().strip()
@@ -648,8 +693,8 @@ class ReviewApp(ctk.CTk):
         self.save_data()
         self.refresh_questions()
 
-    def build_keyword(self, question_number):
-        student = self.current_student()
+    def build_keyword(self, question_number, student=None):
+        student = student or self.current_student()
         if not student:
             return ""
         return (
@@ -666,8 +711,18 @@ class ReviewApp(ctk.CTk):
         normalized = self.normalize_filename(filename)
         return any(self.normalize_filename(keyword) in normalized for keyword in QUESTION_KEYWORDS.get(question_number, []))
 
-    def find_file(self, question_number):
-        student = self.current_student()
+    def has_question_history(self, question):
+        return bool(question.get("submitted") or str(question.get("score", "")).strip() or str(question.get("note", "")).strip())
+
+    def visible_questions_for_student(self, student, record):
+        visible = []
+        for index, question in enumerate(record["questions"]):
+            number = index + 1
+            if self.find_file_for_student(student, number) or self.has_question_history(question):
+                visible.append(index)
+        return visible
+
+    def find_file_for_student(self, student, question_number):
         if not student:
             return None
         sid = self.normalize_filename(student["id"])
@@ -677,9 +732,11 @@ class ReviewApp(ctk.CTk):
             if sid in normalized_name and self.match_question_keywords(path.name, question_number):
                 return path
 
-        # Backward compatibility for older files named like {学号}_第{题号}题.pdf.
-        keyword = self.build_keyword(question_number)
+        keyword = self.build_keyword(question_number, student)
         return next((path for path in self.material_files if keyword and keyword in path.name.lower()), None)
+
+    def find_file(self, question_number):
+        return self.find_file_for_student(self.current_student(), question_number)
 
     def open_material(self, question_number):
         if not self.material_folder:
@@ -714,6 +771,37 @@ class ReviewApp(ctk.CTk):
         required = sum(1 for q in record["questions"][:REQUIRED_COUNT] if q.get("submitted"))
         optional = sum(1 for q in record["questions"][REQUIRED_COUNT:] if q.get("submitted"))
         return required, optional
+
+    def open_history_window(self):
+        if not self.students:
+            messagebox.showwarning(APP_TITLE, "请先导入学生名单或读取历史记录。")
+            return
+        window = ctk.CTkToplevel(self)
+        window.title("批改历史")
+        window.geometry("980x640")
+        window.configure(fg_color=COLORS["bg"])
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(window, text="批改历史", font=FONT_TITLE, text_color=COLORS["text"]).grid(row=0, column=0, padx=22, pady=(20, 8), sticky="w")
+        table = ctk.CTkScrollableFrame(window, fg_color=COLORS["bg"], corner_radius=0)
+        table.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
+        table.grid_columnconfigure(0, weight=1)
+        for row_index, student in enumerate(self.students):
+            record = self.ensure_record(student["id"])
+            required, optional = self.completion(student["id"])
+            total = self.total_score(student["id"])
+            card = SoftCard(table, radius=20)
+            card.grid(row=row_index, column=0, sticky="ew", pady=6, padx=2)
+            card.card.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(card.card, text=f"{student['name']}  {student['id']}", font=FONT_LATIN, text_color=COLORS["text"], anchor="w").grid(row=0, column=0, padx=14, pady=(12, 4), sticky="w")
+            ctk.CTkLabel(card.card, text=f"必修 {required}/3 · 选修 {optional}/5 · 总分 {total:g}", font=FONT_LATIN_SMALL, text_color=COLORS["primary"], anchor="e").grid(row=0, column=1, padx=14, pady=(12, 4), sticky="e")
+            detail = []
+            for index, q in enumerate(record["questions"]):
+                if self.has_question_history(q):
+                    score = q.get("score", "") or "未评分"
+                    detail.append(f"{index + 1}. {QUESTION_TITLES[index + 1]}：{score}")
+            text = "；".join(detail) if detail else "暂无批改记录"
+            ctk.CTkLabel(card.card, text=text, font=FONT_BODY, text_color=COLORS["muted"], anchor="w", wraplength=880, justify="left").grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 12), sticky="ew")
 
     def export_scores(self):
         if not self.students:
