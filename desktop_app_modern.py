@@ -142,8 +142,8 @@ class ReviewApp(ctk.CTk):
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
         self.student_list_rows = []
-        self.student_list_page = 0
-        self.student_page_label = None
+        self.student_list_offset = 0
+        self.student_scroll_label = None
         self.material_indexing = False
         self.material_scan_token = 0
         self.expanded_grades = set()
@@ -277,13 +277,9 @@ class ReviewApp(ctk.CTk):
         self.student_list_frame = ctk.CTkFrame(left, fg_color=COLORS["card"], corner_radius=0)
         self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="nsew")
         self.student_list_frame.grid_columnconfigure(0, weight=1)
-        self.student_pager = ctk.CTkFrame(left, fg_color="transparent")
-        self.student_pager.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
-        self.student_pager.grid_columnconfigure(1, weight=1)
-        ModernButton(self.student_pager, text="\u4e0a\u4e00\u9875", command=self.prev_student_page, fg_color="#F7FAFE", hover_color="#EAF2FF", text_color=COLORS["text"], width=68, height=32).grid(row=0, column=0, padx=3)
-        self.student_page_label = ctk.CTkLabel(self.student_pager, text="0/0", font=FONT_LATIN_SMALL, text_color=COLORS["muted"])
-        self.student_page_label.grid(row=0, column=1, sticky="ew")
-        ModernButton(self.student_pager, text="\u4e0b\u4e00\u9875", command=self.next_student_page, fg_color="#F7FAFE", hover_color="#EAF2FF", text_color=COLORS["text"], width=68, height=32).grid(row=0, column=2, padx=3)
+        self.student_list_frame.bind("<MouseWheel>", self.on_student_mousewheel)
+        self.student_scroll_label = ctk.CTkLabel(left, text="\u9f20\u6807\u6eda\u8f6e\u6ed1\u52a8", font=FONT_SMALL, text_color=COLORS["muted"])
+        self.student_scroll_label.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
 
         center = ctk.CTkFrame(self, fg_color=COLORS["bg"], corner_radius=0)
         center.grid(row=1, column=1, sticky="nsew")
@@ -690,29 +686,29 @@ class ReviewApp(ctk.CTk):
                     rows.append(("student", index, student))
                     self.visible_student_indexes.append(index)
         self.student_list_rows = rows
-        max_page = self.max_student_page()
-        self.student_list_page = max(0, min(self.student_list_page, max_page))
+        self.student_list_offset = max(0, min(self.student_list_offset, self.max_student_offset()))
         self.render_student_page()
 
-    def max_student_page(self):
-        if not self.student_list_rows:
-            return 0
-        return max(0, (len(self.student_list_rows) - 1) // STUDENT_PAGE_SIZE)
+    def max_student_offset(self):
+        return max(0, len(self.student_list_rows) - STUDENT_PAGE_SIZE)
 
     def render_student_page(self):
         for widget in self.student_list_frame.winfo_children():
             widget.destroy()
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
-        total_pages = self.max_student_page() + 1 if self.student_list_rows else 0
-        if self.student_page_label:
-            self.student_page_label.configure(text=f"{self.student_list_page + 1 if total_pages else 0}/{total_pages}")
-        start = self.student_list_page * STUDENT_PAGE_SIZE
+        total = len(self.student_list_rows)
+        if self.student_scroll_label:
+            if total:
+                self.student_scroll_label.configure(text=f"\u663e\u793a {self.student_list_offset + 1}-{min(self.student_list_offset + STUDENT_PAGE_SIZE, total)} / {total}    \u9f20\u6807\u6eda\u8f6e\u6ed1\u52a8")
+            else:
+                self.student_scroll_label.configure(text="\u6682\u65e0\u5b66\u751f")
+        start = self.student_list_offset
         end = min(start + STUDENT_PAGE_SIZE, len(self.student_list_rows))
         for row, item_data in enumerate(self.student_list_rows[start:end]):
             if item_data[0] == "grade":
                 _kind, grade, count, expanded = item_data
-                arrow = "?" if expanded else "?"
+                arrow = "\u25be" if expanded else "\u25b8"
                 header = ctk.CTkButton(
                     self.student_list_frame,
                     text=f"{arrow}  {grade}    {count}\u4eba",
@@ -728,6 +724,7 @@ class ReviewApp(ctk.CTk):
                     border_color=COLORS["line"],
                 )
                 header.grid(row=row, column=0, sticky="ew", pady=(4, 3), padx=2)
+                header.bind("<MouseWheel>", self.on_student_mousewheel)
                 continue
 
             _kind, index, student = item_data
@@ -741,18 +738,19 @@ class ReviewApp(ctk.CTk):
             self.student_item_frames[index] = item
             for child in (item, *item.winfo_children()):
                 child.bind("<Button-1>", lambda _e, idx=index: self.select_student(idx))
+                child.bind("<MouseWheel>", self.on_student_mousewheel)
 
-    def prev_student_page(self):
-        if self.student_list_page > 0:
-            self.student_list_page -= 1
-            self.render_student_page()
-
-    def next_student_page(self):
-        if self.student_list_page < self.max_student_page():
-            self.student_list_page += 1
+    def on_student_mousewheel(self, event):
+        if not self.student_list_rows:
+            return
+        step = -1 if event.delta > 0 else 1
+        next_offset = max(0, min(self.student_list_offset + step * 3, self.max_student_offset()))
+        if next_offset != self.student_list_offset:
+            self.student_list_offset = next_offset
             self.render_student_page()
 
     def schedule_student_search(self):
+        self.student_list_offset = 0
         if self.search_after_id:
             self.after_cancel(self.search_after_id)
         self.search_after_id = self.after(220, self.refresh_student_list)
