@@ -142,10 +142,6 @@ class ReviewApp(ctk.CTk):
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
         self.student_list_rows = []
-        self.student_list_offset = 0
-        self.student_row_widgets = []
-        self.student_row_indexes = {}
-        self.student_scrollbar = None
         self.material_indexing = False
         self.material_scan_token = 0
         self.expanded_grades = set()
@@ -276,28 +272,9 @@ class ReviewApp(ctk.CTk):
             height=38, corner_radius=8, border_color=COLORS["line"], font=FONT_LATIN
         )
         self.search_entry.grid(row=1, column=0, columnspan=2, padx=18, pady=(8, 14), sticky="ew")
-        self.student_list_box = ctk.CTkFrame(left, fg_color=COLORS["card"], corner_radius=0)
-        self.student_list_box.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 12), sticky="nsew")
-        self.student_list_box.grid_columnconfigure(0, weight=1)
-        self.student_list_box.grid_columnconfigure(1, weight=0)
-        self.student_list_box.grid_rowconfigure(0, weight=1)
-        self.student_list_frame = ctk.CTkFrame(self.student_list_box, fg_color=COLORS["card"], corner_radius=0)
-        self.student_list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.student_list_frame = ctk.CTkScrollableFrame(left, fg_color=COLORS["card"], corner_radius=0)
+        self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 12), sticky="nsew")
         self.student_list_frame.grid_columnconfigure(0, weight=1)
-        self.student_scrollbar = ctk.CTkScrollbar(
-            self.student_list_box,
-            orientation="vertical",
-            command=self.on_student_scrollbar,
-            fg_color=COLORS["card_soft"],
-            button_color=COLORS["line"],
-            button_hover_color=COLORS["primary"],
-            width=12,
-        )
-        self.student_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.student_list_box.bind("<MouseWheel>", self.on_student_mousewheel)
-        self.student_list_frame.bind("<MouseWheel>", self.on_student_mousewheel)
-        self.student_scrollbar.bind("<MouseWheel>", self.on_student_mousewheel)
-        self.build_student_row_pool()
 
         center = ctk.CTkFrame(self, fg_color=COLORS["bg"], corner_radius=0)
         center.grid(row=1, column=1, sticky="nsew")
@@ -670,7 +647,9 @@ class ReviewApp(ctk.CTk):
         return "其他"
 
     def refresh_student_list(self):
-        self.student_count_label.configure(text=f"{len(self.students)} \u4eba")
+        for widget in self.student_list_frame.winfo_children():
+            widget.destroy()
+        self.student_count_label.configure(text=f"{len(self.students)} ?")
         self.visible_student_indexes = []
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
@@ -694,134 +673,53 @@ class ReviewApp(ctk.CTk):
                 self.grade_state_initialized = True
             visible_grades = self.expanded_grades
 
-        rows = []
+        row = 0
         for grade in sorted(grouped.keys(), reverse=True):
             students = grouped[grade]
             expanded = grade in visible_grades
-            rows.append(("grade", grade, len(students), expanded))
-            if expanded:
-                for index, student in students:
-                    rows.append(("student", index, student))
-                    self.visible_student_indexes.append(index)
-        self.student_list_rows = rows
-        self.student_list_offset = max(0, min(self.student_list_offset, self.max_student_offset()))
-        self.render_student_page()
-
-    def max_student_offset(self):
-        return max(0, len(self.student_list_rows) - STUDENT_PAGE_SIZE)
-
-    def build_student_row_pool(self):
-        if self.student_row_widgets:
-            return
-        for row in range(STUDENT_PAGE_SIZE):
-            button = ctk.CTkButton(
+            arrow = "\u25be" if expanded else "\u25b8"
+            header = ctk.CTkButton(
                 self.student_list_frame,
-                text="",
+                text=f"{arrow}  {grade}    {len(students)}\u4eba",
+                command=lambda g=grade: self.toggle_grade(g),
                 anchor="w",
-                height=34,
-                corner_radius=10,
-                fg_color=COLORS["card"],
+                height=40,
+                corner_radius=14,
+                fg_color="#F3F7FD",
                 hover_color="#EAF2FF",
                 text_color=COLORS["text"],
-                font=FONT_LATIN,
+                font=FONT_LATIN_SECTION,
                 border_width=1,
-                border_color="#EEF2F7",
-                command=lambda: None,
+                border_color=COLORS["line"],
             )
-            button.grid(row=row, column=0, sticky="ew", pady=2, padx=(8, 2))
-            button.bind("<MouseWheel>", self.on_student_mousewheel)
-            self.student_row_widgets.append(button)
+            header.grid(row=row, column=0, sticky="ew", pady=(4, 3), padx=2)
+            row += 1
 
-    def render_student_page(self):
-        self.build_student_row_pool()
-        self.student_item_frames = {}
-        self.student_item_summary_labels = {}
-        self.student_row_indexes = {}
-        start = self.student_list_offset
-        end = min(start + STUDENT_PAGE_SIZE, len(self.student_list_rows))
-        visible_rows = self.student_list_rows[start:end]
-        self.update_student_scrollbar()
-
-        for row, button in enumerate(self.student_row_widgets):
-            if row >= len(visible_rows):
-                button.grid_remove()
+            if not expanded:
                 continue
-            button.grid()
-            item_data = visible_rows[row]
-            if item_data[0] == "grade":
-                _kind, grade, count, expanded = item_data
-                arrow = "▾" if expanded else "▸"
-                button.configure(
-                    text=f"{arrow}  {grade}    {count}人",
-                    command=lambda g=grade: self.toggle_grade(g),
-                    height=40,
-                    fg_color="#F3F7FD",
-                    hover_color="#EAF2FF",
+
+            for index, student in students:
+                self.visible_student_indexes.append(index)
+                active = index == self.current_index
+                item = ctk.CTkButton(
+                    self.student_list_frame,
+                    text=f"{student['name']}  {student['id']}",
+                    command=lambda idx=index: self.select_student(idx),
+                    anchor="w",
+                    height=34,
+                    corner_radius=10,
+                    fg_color="#EAF2FF" if active else COLORS["card"],
+                    hover_color="#F1F7FF",
                     text_color=COLORS["text"],
-                    font=FONT_LATIN_SECTION,
-                    border_color=COLORS["line"],
+                    font=FONT_LATIN,
+                    border_width=1,
+                    border_color=COLORS["primary"] if active else "#EEF2F7",
                 )
-                button.grid_configure(padx=2, pady=(4, 3))
-                continue
-
-            _kind, index, student = item_data
-            active = index == self.current_index
-            button.configure(
-                text=f"{student['name']}  {student['id']}",
-                command=lambda idx=index: self.select_student(idx),
-                height=34,
-                fg_color="#EAF2FF" if active else COLORS["card"],
-                hover_color="#F1F7FF",
-                text_color=COLORS["text"],
-                font=FONT_LATIN,
-                border_color=COLORS["primary"] if active else "#EEF2F7",
-            )
-            button.grid_configure(padx=(12, 2), pady=2)
-            self.student_item_frames[index] = button
-            self.student_row_indexes[index] = row
-
-    def update_student_scrollbar(self):
-        if not self.student_scrollbar:
-            return
-        total = len(self.student_list_rows)
-        if total <= STUDENT_PAGE_SIZE:
-            self.student_scrollbar.set(0, 1)
-            return
-        start = self.student_list_offset / total
-        end = min(1, (self.student_list_offset + STUDENT_PAGE_SIZE) / total)
-        self.student_scrollbar.set(start, end)
-
-    def set_student_list_offset(self, offset):
-        next_offset = max(0, min(int(offset), self.max_student_offset()))
-        if next_offset != self.student_list_offset:
-            self.student_list_offset = next_offset
-            self.render_student_page()
-        else:
-            self.update_student_scrollbar()
-
-    def on_student_scrollbar(self, *args):
-        if not self.student_list_rows:
-            return
-        if not args:
-            return
-        action = args[0]
-        if action == "moveto" and len(args) > 1:
-            fraction = max(0.0, min(float(args[1]), 1.0))
-            self.set_student_list_offset(round(fraction * self.max_student_offset()))
-        elif action == "scroll" and len(args) > 2:
-            amount = int(args[1])
-            unit = args[2]
-            step = 8 if unit == "pages" else 1
-            self.set_student_list_offset(self.student_list_offset + amount * step)
-
-    def on_student_mousewheel(self, event):
-        if not self.student_list_rows:
-            return
-        step = -1 if event.delta > 0 else 1
-        self.set_student_list_offset(self.student_list_offset + step)
+                item.grid(row=row, column=0, sticky="ew", pady=2, padx=(12, 2))
+                self.student_item_frames[index] = item
+                row += 1
 
     def schedule_student_search(self):
-        self.student_list_offset = 0
         if self.search_after_id:
             self.after_cancel(self.search_after_id)
         self.search_after_id = self.after(220, self.refresh_student_list)
@@ -833,7 +731,7 @@ class ReviewApp(ctk.CTk):
         frame.configure(fg_color="#EAF2FF" if active else COLORS["card"], border_color=COLORS["primary"] if active else "#EEF2F7")
 
     def update_student_row_summary(self, index):
-        # The virtual student list intentionally shows only name and ID for speed.
+        # The student list intentionally shows only name and ID for speed.
         return
 
     def toggle_grade(self, grade):
