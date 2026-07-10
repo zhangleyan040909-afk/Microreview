@@ -433,6 +433,8 @@ class ReviewApp(ctk.CTk):
             self.current_index = 0
         else:
             self.current_index = max(0, min(self.current_index, len(self.students) - 1))
+        self.expanded_grades = set()
+        self.grade_state_initialized = True
         self.save_data()
         self.refresh_all()
         messagebox.showinfo(APP_TITLE, f"\u5df2\u5408\u5e76\u5bfc\u5165 {len(students)} \u6761\u540d\u5355\u8bb0\u5f55\u3002\n\u65b0\u589e {added_count} \u4eba\uff0c\u66f4\u65b0 {updated_count} \u4eba\uff1b\u5f53\u524d\u5171 {len(self.students)} \u4eba\u3002")
@@ -667,10 +669,6 @@ class ReviewApp(ctk.CTk):
         if keyword:
             visible_grades = set(grouped.keys())
         else:
-            if not self.grade_state_initialized and grouped:
-                if len(self.students) <= 500:
-                    self.expanded_grades.add(sorted(grouped.keys(), reverse=True)[0])
-                self.grade_state_initialized = True
             visible_grades = self.expanded_grades
 
         row = 0
