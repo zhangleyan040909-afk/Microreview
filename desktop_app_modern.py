@@ -145,6 +145,7 @@ class ReviewApp(ctk.CTk):
         self.student_list_offset = 0
         self.student_row_widgets = []
         self.student_row_indexes = {}
+        self.student_scrollbar = None
         self.material_indexing = False
         self.material_scan_token = 0
         self.expanded_grades = set()
@@ -275,10 +276,27 @@ class ReviewApp(ctk.CTk):
             height=38, corner_radius=8, border_color=COLORS["line"], font=FONT_LATIN
         )
         self.search_entry.grid(row=1, column=0, columnspan=2, padx=18, pady=(8, 14), sticky="ew")
-        self.student_list_frame = ctk.CTkFrame(left, fg_color=COLORS["card"], corner_radius=0)
-        self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 12), sticky="nsew")
+        self.student_list_box = ctk.CTkFrame(left, fg_color=COLORS["card"], corner_radius=0)
+        self.student_list_box.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 12), sticky="nsew")
+        self.student_list_box.grid_columnconfigure(0, weight=1)
+        self.student_list_box.grid_columnconfigure(1, weight=0)
+        self.student_list_box.grid_rowconfigure(0, weight=1)
+        self.student_list_frame = ctk.CTkFrame(self.student_list_box, fg_color=COLORS["card"], corner_radius=0)
+        self.student_list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         self.student_list_frame.grid_columnconfigure(0, weight=1)
+        self.student_scrollbar = ctk.CTkScrollbar(
+            self.student_list_box,
+            orientation="vertical",
+            command=self.on_student_scrollbar,
+            fg_color=COLORS["card_soft"],
+            button_color=COLORS["line"],
+            button_hover_color=COLORS["primary"],
+            width=12,
+        )
+        self.student_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.student_list_box.bind("<MouseWheel>", self.on_student_mousewheel)
         self.student_list_frame.bind("<MouseWheel>", self.on_student_mousewheel)
+        self.student_scrollbar.bind("<MouseWheel>", self.on_student_mousewheel)
         self.build_student_row_pool()
 
         center = ctk.CTkFrame(self, fg_color=COLORS["bg"], corner_radius=0)
@@ -722,6 +740,7 @@ class ReviewApp(ctk.CTk):
         start = self.student_list_offset
         end = min(start + STUDENT_PAGE_SIZE, len(self.student_list_rows))
         visible_rows = self.student_list_rows[start:end]
+        self.update_student_scrollbar()
 
         for row, button in enumerate(self.student_row_widgets):
             if row >= len(visible_rows):
@@ -761,14 +780,45 @@ class ReviewApp(ctk.CTk):
             self.student_item_frames[index] = button
             self.student_row_indexes[index] = row
 
+    def update_student_scrollbar(self):
+        if not self.student_scrollbar:
+            return
+        total = len(self.student_list_rows)
+        if total <= STUDENT_PAGE_SIZE:
+            self.student_scrollbar.set(0, 1)
+            return
+        start = self.student_list_offset / total
+        end = min(1, (self.student_list_offset + STUDENT_PAGE_SIZE) / total)
+        self.student_scrollbar.set(start, end)
+
+    def set_student_list_offset(self, offset):
+        next_offset = max(0, min(int(offset), self.max_student_offset()))
+        if next_offset != self.student_list_offset:
+            self.student_list_offset = next_offset
+            self.render_student_page()
+        else:
+            self.update_student_scrollbar()
+
+    def on_student_scrollbar(self, *args):
+        if not self.student_list_rows:
+            return
+        if not args:
+            return
+        action = args[0]
+        if action == "moveto" and len(args) > 1:
+            fraction = max(0.0, min(float(args[1]), 1.0))
+            self.set_student_list_offset(round(fraction * self.max_student_offset()))
+        elif action == "scroll" and len(args) > 2:
+            amount = int(args[1])
+            unit = args[2]
+            step = 8 if unit == "pages" else 1
+            self.set_student_list_offset(self.student_list_offset + amount * step)
+
     def on_student_mousewheel(self, event):
         if not self.student_list_rows:
             return
         step = -1 if event.delta > 0 else 1
-        next_offset = max(0, min(self.student_list_offset + step, self.max_student_offset()))
-        if next_offset != self.student_list_offset:
-            self.student_list_offset = next_offset
-            self.render_student_page()
+        self.set_student_list_offset(self.student_list_offset + step)
 
     def schedule_student_search(self):
         self.student_list_offset = 0
