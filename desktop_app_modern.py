@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -17,6 +18,7 @@ APP_TITLE = "Microreview"
 QUESTION_COUNT = 8
 REQUIRED_COUNT = 3
 OPTIONAL_MAX_SCORE = 25
+STUDENT_PAGE_SIZE = 70
 DEFAULT_PATTERN = "{学号}_第{题号}题"
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
@@ -139,6 +141,11 @@ class ReviewApp(ctk.CTk):
         self.visible_student_indexes = []
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
+        self.student_list_rows = []
+        self.student_list_page = 0
+        self.student_page_label = None
+        self.material_indexing = False
+        self.material_scan_token = 0
         self.expanded_grades = set()
         self.grade_state_initialized = False
         self.question_widgets = {}
@@ -267,9 +274,16 @@ class ReviewApp(ctk.CTk):
             height=38, corner_radius=8, border_color=COLORS["line"], font=FONT_LATIN
         )
         self.search_entry.grid(row=1, column=0, columnspan=2, padx=18, pady=(8, 14), sticky="ew")
-        self.student_list_frame = ctk.CTkScrollableFrame(left, fg_color=COLORS["card"], corner_radius=0)
-        self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 12), sticky="nsew")
+        self.student_list_frame = ctk.CTkFrame(left, fg_color=COLORS["card"], corner_radius=0)
+        self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="nsew")
         self.student_list_frame.grid_columnconfigure(0, weight=1)
+        self.student_pager = ctk.CTkFrame(left, fg_color="transparent")
+        self.student_pager.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
+        self.student_pager.grid_columnconfigure(1, weight=1)
+        ModernButton(self.student_pager, text="\u4e0a\u4e00\u9875", command=self.prev_student_page, fg_color="#F7FAFE", hover_color="#EAF2FF", text_color=COLORS["text"], width=68, height=32).grid(row=0, column=0, padx=3)
+        self.student_page_label = ctk.CTkLabel(self.student_pager, text="0/0", font=FONT_LATIN_SMALL, text_color=COLORS["muted"])
+        self.student_page_label.grid(row=0, column=1, sticky="ew")
+        ModernButton(self.student_pager, text="\u4e0b\u4e00\u9875", command=self.next_student_page, fg_color="#F7FAFE", hover_color="#EAF2FF", text_color=COLORS["text"], width=68, height=32).grid(row=0, column=2, padx=3)
 
         center = ctk.CTkFrame(self, fg_color=COLORS["bg"], corner_radius=0)
         center.grid(row=1, column=1, sticky="nsew")
@@ -541,27 +555,33 @@ class ReviewApp(ctk.CTk):
             self.save_data()
 
     def sync_material_submissions(self):
-        if not self.students or not self.material_files:
+        if not self.students or not self.material_index:
             return
         for student in self.students:
             record = self.ensure_record(student["id"])
+            matched_questions = self.material_index.get(student["id"], {})
             for index, question in enumerate(record["questions"]):
-                if self.find_file_for_student(student, index + 1):
+                if index + 1 in matched_questions:
                     question["submitted"] = True
 
     def index_material_files(self):
-        self.material_files = []
-        self.material_index = {}
-        if not self.material_folder or not Path(self.material_folder).exists():
-            return
-        student_ids = {self.normalize_filename(student["id"]): student["id"] for student in self.students}
+        files, material_index = self.build_material_index(self.material_folder, self.students)
+        self.material_files = files
+        self.material_index = material_index
+
+    def build_material_index(self, folder, students):
+        material_files = []
+        material_index = {}
+        if not folder or not Path(folder).exists():
+            return material_files, material_index
+        student_ids = {self.normalize_filename(student["id"]): student["id"] for student in students}
         non_numeric_ids = {sid: original for sid, original in student_ids.items() if not sid.isdigit()}
-        for root, _dirs, files in os.walk(self.material_folder):
+        for root, _dirs, files in os.walk(folder):
             for name in files:
                 path = Path(root) / name
                 if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
-                self.material_files.append(path)
+                material_files.append(path)
                 normalized_name = self.normalize_filename(path.name)
                 candidate_ids = []
                 for token in re.findall(r"\d{4,}", normalized_name):
@@ -576,19 +596,56 @@ class ReviewApp(ctk.CTk):
                 for original_id in set(candidate_ids):
                     for number in range(1, QUESTION_COUNT + 1):
                         if self.match_question_keywords(path.name, number):
-                            self.material_index.setdefault(original_id, {}).setdefault(number, path)
+                            material_index.setdefault(original_id, {}).setdefault(number, path)
+        return material_files, material_index
 
-    def refresh_all(self, reindex_materials=True):
+    def start_material_indexing(self, folder):
+        self.material_scan_token += 1
+        token = self.material_scan_token
+        self.material_indexing = True
+        self.material_files = []
+        self.material_index = {}
+        self.folder_label.configure(text="\u6b63\u5728\u540e\u53f0\u5339\u914d\u6750\u6599\uff0c\u8bf7\u7a0d\u5019...")
+        students_snapshot = [dict(student) for student in self.students]
+
+        def worker():
+            try:
+                files, index = self.build_material_index(folder, students_snapshot)
+                self.after(0, lambda: self.finish_material_indexing(token, folder, files, index, None))
+            except Exception as exc:
+                self.after(0, lambda e=exc: self.finish_material_indexing(token, folder, [], {}, e))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_material_indexing(self, token, folder, files, material_index, error):
+        if token != self.material_scan_token:
+            return
+        self.material_indexing = False
+        if error:
+            messagebox.showerror(APP_TITLE, f"\u6750\u6599\u5339\u914d\u5931\u8d25\uff1a{error}")
+            self.folder_label.configure(text="\u6750\u6599\u5339\u914d\u5931\u8d25")
+            return
+        self.material_folder = folder
+        self.material_files = files
+        self.material_index = material_index
+        self.sync_material_submissions()
+        self.save_data()
+        self.refresh_current()
+        self.refresh_questions()
+        self.refresh_summary()
+        self.folder_label.configure(text=f"{folder}?{len(files)} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u5339\u914d\u5b8c\u6210?")
+
+    def refresh_all(self, reindex_materials=False):
         if self.material_folder and reindex_materials:
-            self.index_material_files()
-            self.sync_material_submissions()
+            self.start_material_indexing(self.material_folder)
         self.refresh_student_list()
         self.refresh_current()
         self.refresh_questions()
         self.refresh_summary()
-        text = "未选择材料文件夹"
+        text = "\u672a\u9009\u62e9\u6750\u6599\u6587\u4ef6\u5939"
         if self.material_folder:
-            text = f"{self.material_folder}（{len(self.material_files)} 个文件）"
+            suffix = "\u540e\u53f0\u5339\u914d\u4e2d..." if self.material_indexing else f"{len(self.material_files)} \u4e2a\u6587\u4ef6"
+            text = f"{self.material_folder}?{suffix}?"
         self.folder_label.configure(text=text)
 
     def grade_key(self, student):
@@ -599,10 +656,10 @@ class ReviewApp(ctk.CTk):
         return "其他"
 
     def refresh_student_list(self):
-        for widget in self.student_list_frame.winfo_children():
-            widget.destroy()
-        self.student_count_label.configure(text=f"{len(self.students)} 人")
+        self.student_count_label.configure(text=f"{len(self.students)} \u4eba")
         self.visible_student_indexes = []
+        self.student_item_frames = {}
+        self.student_item_summary_labels = {}
         keyword = self.search_var.get().strip().lower() if hasattr(self, "search_var") else ""
 
         grouped = {}
@@ -623,50 +680,77 @@ class ReviewApp(ctk.CTk):
                 self.grade_state_initialized = True
             visible_grades = self.expanded_grades
 
-        row = 0
+        rows = []
         for grade in sorted(grouped.keys(), reverse=True):
             students = grouped[grade]
             expanded = grade in visible_grades
-            arrow = "▼" if expanded else "▶"
-            title = f"{arrow}  {grade}"
-            header_text = f"{title}                                      {len(students)}人"
-            header = ctk.CTkButton(
-                self.student_list_frame,
-                text=header_text,
-                command=lambda g=grade: self.toggle_grade(g),
-                anchor="w",
-                height=48,
-                corner_radius=14,
-                fg_color="#F3F7FD",
-                hover_color="#EAF2FF",
-                text_color=COLORS["text"],
-                font=FONT_LATIN_SECTION,
-                border_width=1,
-                border_color=COLORS["line"],
-            )
-            header.grid(row=row, column=0, sticky="ew", pady=(5, 3), padx=2)
-            row += 1
+            rows.append(("grade", grade, len(students), expanded))
+            if expanded:
+                for index, student in students:
+                    rows.append(("student", index, student))
+                    self.visible_student_indexes.append(index)
+        self.student_list_rows = rows
+        max_page = self.max_student_page()
+        self.student_list_page = max(0, min(self.student_list_page, max_page))
+        self.render_student_page()
 
-            if not expanded:
+    def max_student_page(self):
+        if not self.student_list_rows:
+            return 0
+        return max(0, (len(self.student_list_rows) - 1) // STUDENT_PAGE_SIZE)
+
+    def render_student_page(self):
+        for widget in self.student_list_frame.winfo_children():
+            widget.destroy()
+        self.student_item_frames = {}
+        self.student_item_summary_labels = {}
+        total_pages = self.max_student_page() + 1 if self.student_list_rows else 0
+        if self.student_page_label:
+            self.student_page_label.configure(text=f"{self.student_list_page + 1 if total_pages else 0}/{total_pages}")
+        start = self.student_list_page * STUDENT_PAGE_SIZE
+        end = min(start + STUDENT_PAGE_SIZE, len(self.student_list_rows))
+        for row, item_data in enumerate(self.student_list_rows[start:end]):
+            if item_data[0] == "grade":
+                _kind, grade, count, expanded = item_data
+                arrow = "?" if expanded else "?"
+                header = ctk.CTkButton(
+                    self.student_list_frame,
+                    text=f"{arrow}  {grade}    {count}\u4eba",
+                    command=lambda g=grade: self.toggle_grade(g),
+                    anchor="w",
+                    height=42,
+                    corner_radius=14,
+                    fg_color="#F3F7FD",
+                    hover_color="#EAF2FF",
+                    text_color=COLORS["text"],
+                    font=FONT_LATIN_SECTION,
+                    border_width=1,
+                    border_color=COLORS["line"],
+                )
+                header.grid(row=row, column=0, sticky="ew", pady=(4, 3), padx=2)
                 continue
 
-            for index, student in students:
-                self.visible_student_indexes.append(index)
-                active = index == self.current_index
-                fg = "#EAF2FF" if active else COLORS["card"]
-                border = COLORS["primary"] if active else "#EEF2F7"
-                item = ctk.CTkFrame(self.student_list_frame, fg_color=fg, corner_radius=10, border_width=1, border_color=border)
-                item.grid(row=row, column=0, sticky="ew", pady=2, padx=(12, 2))
-                item.grid_columnconfigure(0, weight=1)
-                ctk.CTkLabel(item, text=f"{student['name']}  {student['id']}", font=FONT_LATIN, text_color=COLORS["text"], anchor="w").grid(row=0, column=0, padx=10, pady=(7, 2), sticky="ew")
-                required, optional = self.completion(student["id"])
-                total = self.total_score(student["id"])
-                ctk.CTkLabel(item, text=f"必修{required}/3 · 选修{optional}/5 · {total:g}分", font=FONT_LATIN_SMALL, text_color=COLORS["muted"], anchor="w").grid(row=1, column=0, padx=10, pady=(0, 7), sticky="ew")
-                for child in (item, *item.winfo_children()):
-                    child.bind("<Button-1>", lambda _e, idx=index: self.select_student(idx))
-                    child.bind("<Enter>", lambda _e, frame=item, act=active: self.hover_card(frame, True, act))
-                    child.bind("<Leave>", lambda _e, frame=item, act=active: self.hover_card(frame, False, act))
-                row += 1
+            _kind, index, student = item_data
+            active = index == self.current_index
+            fg = "#EAF2FF" if active else COLORS["card"]
+            border = COLORS["primary"] if active else "#EEF2F7"
+            item = ctk.CTkFrame(self.student_list_frame, fg_color=fg, corner_radius=10, border_width=1, border_color=border)
+            item.grid(row=row, column=0, sticky="ew", pady=2, padx=(12, 2))
+            item.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(item, text=f"{student['name']}  {student['id']}", font=FONT_LATIN, text_color=COLORS["text"], anchor="w").grid(row=0, column=0, padx=10, pady=8, sticky="ew")
+            self.student_item_frames[index] = item
+            for child in (item, *item.winfo_children()):
+                child.bind("<Button-1>", lambda _e, idx=index: self.select_student(idx))
+
+    def prev_student_page(self):
+        if self.student_list_page > 0:
+            self.student_list_page -= 1
+            self.render_student_page()
+
+    def next_student_page(self):
+        if self.student_list_page < self.max_student_page():
+            self.student_list_page += 1
+            self.render_student_page()
 
     def schedule_student_search(self):
         if self.search_after_id:
@@ -680,12 +764,8 @@ class ReviewApp(ctk.CTk):
         frame.configure(fg_color="#EAF2FF" if active else COLORS["card"], border_color=COLORS["primary"] if active else "#EEF2F7")
 
     def update_student_row_summary(self, index):
-        if index not in self.student_item_summary_labels or index >= len(self.students):
-            return
-        student = self.students[index]
-        required, optional = self.completion(student["id"])
-        total = self.total_score(student["id"])
-        self.student_item_summary_labels[index].configure(text=f"??{required}/3 ? ??{optional}/5 ? {total:g}?")
+        # The virtual student list intentionally shows only name and ID for speed.
+        return
 
     def toggle_grade(self, grade):
         if grade in self.expanded_grades:
