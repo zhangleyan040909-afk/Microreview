@@ -624,7 +624,7 @@ class ReviewApp(ctk.CTk):
         self.refresh_current()
         self.refresh_questions()
         self.refresh_summary()
-        self.folder_label.configure(text=f"{folder}?{len(files)} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u5339\u914d\u5b8c\u6210?")
+        self.folder_label.configure(text=f"{folder}\uff08{len(files)} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u5339\u914d\u5b8c\u6210\uff09")
 
     def refresh_all(self, reindex_materials=False):
         if self.material_folder and reindex_materials:
@@ -636,7 +636,7 @@ class ReviewApp(ctk.CTk):
         text = "\u672a\u9009\u62e9\u6750\u6599\u6587\u4ef6\u5939"
         if self.material_folder:
             suffix = "\u540e\u53f0\u5339\u914d\u4e2d..." if self.material_indexing else f"{len(self.material_files)} \u4e2a\u6587\u4ef6"
-            text = f"{self.material_folder}?{suffix}?"
+            text = f"{self.material_folder}\uff08{suffix}\uff09"
         self.folder_label.configure(text=text)
 
     def grade_key(self, student):
@@ -649,7 +649,7 @@ class ReviewApp(ctk.CTk):
     def refresh_student_list(self):
         for widget in self.student_list_frame.winfo_children():
             widget.destroy()
-        self.student_count_label.configure(text=f"{len(self.students)} ?")
+        self.student_count_label.configure(text=f"{len(self.students)} \u4eba")
         self.visible_student_indexes = []
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
