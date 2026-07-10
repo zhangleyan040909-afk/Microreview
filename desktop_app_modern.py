@@ -18,7 +18,6 @@ APP_TITLE = "Microreview"
 QUESTION_COUNT = 8
 REQUIRED_COUNT = 3
 OPTIONAL_MAX_SCORE = 25
-STUDENT_PAGE_SIZE = 70
 DEFAULT_PATTERN = "{学号}_第{题号}题"
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
@@ -138,10 +137,10 @@ class ReviewApp(ctk.CTk):
         self.file_pattern = DEFAULT_PATTERN
         self.material_files = []
         self.material_index = {}
+        self.material_report = self.empty_material_report()
         self.visible_student_indexes = []
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
-        self.student_list_rows = []
         self.material_indexing = False
         self.material_scan_token = 0
         self.expanded_grades = set()
@@ -251,7 +250,7 @@ class ReviewApp(ctk.CTk):
         self.toolbar_button(actions, "下载模板", self.export_template, 1, secondary=True)
         self.toolbar_button(actions, "读取记录", self.load_saved_records, 2, secondary=True)
         self.toolbar_button(actions, "保存记录", self.save_records, 3, secondary=True)
-        self.toolbar_button(actions, "批改历史", self.open_history_window, 4, secondary=True)
+        self.toolbar_button(actions, "材料匹配报告", self.open_material_report, 4, secondary=True)
         self.toolbar_button(actions, "选择材料文件夹", self.choose_material_folder, 5, secondary=True)
         self.toolbar_button(actions, "导出成绩表", self.export_scores, 6)
         self.folder_label = ctk.CTkLabel(top, text="未选择材料文件夹", font=FONT_SMALL, text_color=COLORS["muted"], anchor="e")
@@ -272,6 +271,18 @@ class ReviewApp(ctk.CTk):
             height=38, corner_radius=8, border_color=COLORS["line"], font=FONT_LATIN
         )
         self.search_entry.grid(row=1, column=0, columnspan=2, padx=18, pady=(8, 14), sticky="ew")
+        self.pending_only_var = tk.BooleanVar(value=False)
+        self.pending_only_switch = ctk.CTkSwitch(
+            left,
+            text="只看待批改学生",
+            variable=self.pending_only_var,
+            command=self.on_pending_filter_changed,
+            font=FONT_BODY,
+            progress_color=COLORS["primary"],
+            button_color=COLORS["primary"],
+            button_hover_color=COLORS["primary_hover"],
+        )
+        self.pending_only_switch.grid(row=2, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="w")
         self.student_list_frame = ctk.CTkScrollableFrame(left, fg_color=COLORS["card"], corner_radius=0)
         self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 12), sticky="nsew")
         self.student_list_frame.grid_columnconfigure(0, weight=1)
@@ -395,6 +406,8 @@ class ReviewApp(ctk.CTk):
         self.current_index = 0
         self.material_folder = ""
         self.material_files = []
+        self.material_index = {}
+        self.material_report = self.empty_material_report()
         self.expanded_grades = set()
         self.grade_state_initialized = False
         self.save_data()
@@ -557,16 +570,31 @@ class ReviewApp(ctk.CTk):
                 if index + 1 in matched_questions:
                     question["submitted"] = True
 
+    def empty_material_report(self):
+        return {
+            "folder": "",
+            "supported_files": 0,
+            "matched_files": 0,
+            "matched_items": 0,
+            "id_without_question": [],
+            "question_without_id": [],
+            "unrecognized": [],
+            "duplicates": [],
+        }
+
     def index_material_files(self):
-        files, material_index = self.build_material_index(self.material_folder, self.students)
+        files, material_index, report = self.build_material_index(self.material_folder, self.students)
         self.material_files = files
         self.material_index = material_index
+        self.material_report = report
 
     def build_material_index(self, folder, students):
         material_files = []
         material_index = {}
+        report = self.empty_material_report()
+        report["folder"] = folder or ""
         if not folder or not Path(folder).exists():
-            return material_files, material_index
+            return material_files, material_index, report
         student_ids = {self.normalize_filename(student["id"]): student["id"] for student in students}
         non_numeric_ids = {sid: original for sid, original in student_ids.items() if not sid.isdigit()}
         for root, _dirs, files in os.walk(folder):
@@ -575,6 +603,7 @@ class ReviewApp(ctk.CTk):
                 if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
                 material_files.append(path)
+                report["supported_files"] += 1
                 normalized_name = self.normalize_filename(path.name)
                 candidate_ids = []
                 for token in re.findall(r"\d{4,}", normalized_name):
@@ -584,13 +613,32 @@ class ReviewApp(ctk.CTk):
                     for sid, original in non_numeric_ids.items():
                         if sid and sid in normalized_name:
                             candidate_ids.append(original)
-                if not candidate_ids:
+                question_numbers = [
+                    number for number in range(1, QUESTION_COUNT + 1)
+                    if self.match_question_keywords(path.name, number)
+                ]
+                if not candidate_ids and not question_numbers:
+                    report["unrecognized"].append(str(path))
                     continue
+                if candidate_ids and not question_numbers:
+                    report["id_without_question"].append(str(path))
+                    continue
+                if question_numbers and not candidate_ids:
+                    report["question_without_id"].append(str(path))
+                    continue
+                matched_this_file = False
                 for original_id in set(candidate_ids):
-                    for number in range(1, QUESTION_COUNT + 1):
-                        if self.match_question_keywords(path.name, number):
-                            material_index.setdefault(original_id, {}).setdefault(number, path)
-        return material_files, material_index
+                    for number in question_numbers:
+                        existing = material_index.setdefault(original_id, {}).get(number)
+                        if existing:
+                            report["duplicates"].append(f"{original_id} 第{number}题：{existing.name} / {path.name}")
+                            continue
+                        material_index.setdefault(original_id, {})[number] = path
+                        report["matched_items"] += 1
+                        matched_this_file = True
+                if matched_this_file:
+                    report["matched_files"] += 1
+        return material_files, material_index, report
 
     def start_material_indexing(self, folder):
         self.material_scan_token += 1
@@ -598,19 +646,20 @@ class ReviewApp(ctk.CTk):
         self.material_indexing = True
         self.material_files = []
         self.material_index = {}
+        self.material_report = self.empty_material_report()
         self.folder_label.configure(text="\u6b63\u5728\u540e\u53f0\u5339\u914d\u6750\u6599\uff0c\u8bf7\u7a0d\u5019...")
         students_snapshot = [dict(student) for student in self.students]
 
         def worker():
             try:
-                files, index = self.build_material_index(folder, students_snapshot)
-                self.after(0, lambda: self.finish_material_indexing(token, folder, files, index, None))
+                files, index, report = self.build_material_index(folder, students_snapshot)
+                self.after(0, lambda: self.finish_material_indexing(token, folder, files, index, report, None))
             except Exception as exc:
-                self.after(0, lambda e=exc: self.finish_material_indexing(token, folder, [], {}, e))
+                self.after(0, lambda e=exc: self.finish_material_indexing(token, folder, [], {}, self.empty_material_report(), e))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def finish_material_indexing(self, token, folder, files, material_index, error):
+    def finish_material_indexing(self, token, folder, files, material_index, report, error):
         if token != self.material_scan_token:
             return
         self.material_indexing = False
@@ -621,8 +670,10 @@ class ReviewApp(ctk.CTk):
         self.material_folder = folder
         self.material_files = files
         self.material_index = material_index
+        self.material_report = report
         self.sync_material_submissions()
         self.save_data()
+        self.refresh_student_list()
         self.refresh_current()
         self.refresh_questions()
         self.refresh_summary()
@@ -651,20 +702,29 @@ class ReviewApp(ctk.CTk):
     def refresh_student_list(self):
         for widget in self.student_list_frame.winfo_children():
             widget.destroy()
-        self.student_count_label.configure(text=f"{len(self.students)} \u4eba")
         self.visible_student_indexes = []
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
         keyword = self.search_var.get().strip().lower() if hasattr(self, "search_var") else ""
+        pending_var = getattr(self, "pending_only_var", None)
+        pending_only = bool(pending_var.get()) if pending_var else False
 
         grouped = {}
+        visible_count = 0
         for index, student in enumerate(self.students):
             name = student["name"].lower()
             sid = student["id"].lower()
             if keyword and keyword not in name and keyword not in sid:
                 continue
+            if pending_only and not self.is_pending_review(student):
+                continue
             grade = self.grade_key(student)
             grouped.setdefault(grade, []).append((index, student))
+            visible_count += 1
+        if pending_only:
+            self.student_count_label.configure(text=f"{visible_count}/{len(self.students)} \u4eba")
+        else:
+            self.student_count_label.configure(text=f"{len(self.students)} \u4eba")
 
         if keyword:
             visible_grades = set(grouped.keys())
@@ -716,6 +776,15 @@ class ReviewApp(ctk.CTk):
                 item.grid(row=row, column=0, sticky="ew", pady=2, padx=(12, 2))
                 self.student_item_frames[index] = item
                 row += 1
+
+    def on_pending_filter_changed(self):
+        if self.pending_only_var.get():
+            pending_index = self.next_pending_index(start=-1, wrap=False)
+            if pending_index is not None:
+                self.expanded_grades.add(self.grade_key(self.students[pending_index]))
+                self.select_student(pending_index)
+                return
+        self.refresh_student_list()
 
     def schedule_student_search(self):
         if self.search_after_id:
@@ -866,6 +935,8 @@ class ReviewApp(ctk.CTk):
         self.schedule_save_data()
         self.update_student_row_summary(self.current_index)
         self.refresh_summary()
+        if getattr(self, "pending_only_var", None) and self.pending_only_var.get():
+            self.refresh_student_list()
 
     def prev_student(self):
         if self.students:
@@ -873,6 +944,15 @@ class ReviewApp(ctk.CTk):
 
     def next_student(self):
         if self.students:
+            if getattr(self, "pending_only_var", None) and self.pending_only_var.get():
+                pending_index = self.next_pending_index(start=self.current_index, wrap=True)
+                if pending_index is None:
+                    messagebox.showinfo(APP_TITLE, "当前没有待批改学生。")
+                    return
+                self.expanded_grades.add(self.grade_key(self.students[pending_index]))
+                self.select_student(pending_index)
+                self.refresh_student_list()
+                return
             self.select_student(min(len(self.students) - 1, self.current_index + 1))
 
     def update_pattern(self):
@@ -900,6 +980,29 @@ class ReviewApp(ctk.CTk):
 
     def has_question_history(self, question):
         return bool(question.get("submitted") or str(question.get("score", "")).strip() or str(question.get("note", "")).strip())
+
+    def is_pending_review(self, student):
+        record = self.ensure_record(student["id"])
+        matched_numbers = set(self.material_index.get(student["id"], {}).keys())
+        for index, question in enumerate(record["questions"]):
+            number = index + 1
+            visible = number in matched_numbers or self.has_question_history(question)
+            if visible and not str(question.get("score", "")).strip():
+                return True
+        return False
+
+    def next_pending_index(self, start=None, wrap=True):
+        if not self.students:
+            return None
+        start = self.current_index if start is None else start
+        ranges = [range(start + 1, len(self.students))]
+        if wrap:
+            ranges.append(range(0, min(start, len(self.students))))
+        for indexes in ranges:
+            for index in indexes:
+                if self.is_pending_review(self.students[index]):
+                    return index
+        return None
 
     def visible_questions_for_student(self, student, record):
         visible = []
@@ -966,36 +1069,58 @@ class ReviewApp(ctk.CTk):
         optional = sum(1 for q in record["questions"][REQUIRED_COUNT:] if q.get("submitted"))
         return required, optional
 
-    def open_history_window(self):
-        if not self.students:
-            messagebox.showwarning(APP_TITLE, "请先导入学生名单或读取历史记录。")
+    def material_report_text(self):
+        report = self.material_report or self.empty_material_report()
+        lines = [
+            "材料匹配报告",
+            "",
+            f"材料文件夹：{report.get('folder') or self.material_folder or '未选择'}",
+            f"支持格式文件数：{report.get('supported_files', 0)}",
+            f"成功匹配文件数：{report.get('matched_files', 0)}",
+            f"成功匹配题目数：{report.get('matched_items', 0)}",
+            f"识别到学号但未识别题目：{len(report.get('id_without_question', []))}",
+            f"识别到题目但未匹配学生：{len(report.get('question_without_id', []))}",
+            f"完全无法识别：{len(report.get('unrecognized', []))}",
+            f"重复匹配：{len(report.get('duplicates', []))}",
+            "",
+        ]
+
+        def append_section(title, items):
+            lines.append(title)
+            if not items:
+                lines.append("  无")
+            else:
+                limit = 300
+                for item in items[:limit]:
+                    lines.append(f"  - {item}")
+                if len(items) > limit:
+                    lines.append(f"  ... 还有 {len(items) - limit} 条未显示")
+            lines.append("")
+
+        append_section("识别到学号但未识别题目的文件", report.get("id_without_question", []))
+        append_section("识别到题目但未匹配学生的文件", report.get("question_without_id", []))
+        append_section("完全无法识别的文件", report.get("unrecognized", []))
+        append_section("重复匹配记录", report.get("duplicates", []))
+        return "\n".join(lines)
+
+    def open_material_report(self):
+        if self.material_indexing:
+            messagebox.showinfo(APP_TITLE, "材料仍在后台匹配中，请稍后再查看报告。")
+            return
+        if not self.material_folder and not self.material_files:
+            messagebox.showwarning(APP_TITLE, "请先选择材料文件夹。")
             return
         window = ctk.CTkToplevel(self)
-        window.title("批改历史")
-        window.geometry("980x640")
+        window.title("材料匹配报告")
+        window.geometry("980x680")
         window.configure(fg_color=COLORS["bg"])
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(window, text="批改历史", font=FONT_TITLE, text_color=COLORS["text"]).grid(row=0, column=0, padx=22, pady=(20, 8), sticky="w")
-        table = ctk.CTkScrollableFrame(window, fg_color=COLORS["bg"], corner_radius=0)
-        table.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
-        table.grid_columnconfigure(0, weight=1)
-        for row_index, student in enumerate(self.students):
-            record = self.ensure_record(student["id"])
-            required, optional = self.completion(student["id"])
-            total = self.total_score(student["id"])
-            card = SoftCard(table, radius=20)
-            card.grid(row=row_index, column=0, sticky="ew", pady=6, padx=2)
-            card.card.grid_columnconfigure(1, weight=1)
-            ctk.CTkLabel(card.card, text=f"{student['name']}  {student['id']}", font=FONT_LATIN, text_color=COLORS["text"], anchor="w").grid(row=0, column=0, padx=14, pady=(12, 4), sticky="w")
-            ctk.CTkLabel(card.card, text=f"必修 {required}/3 · 选修 {optional}/5 · 总分 {total:g}", font=FONT_LATIN_SMALL, text_color=COLORS["primary"], anchor="e").grid(row=0, column=1, padx=14, pady=(12, 4), sticky="e")
-            detail = []
-            for index, q in enumerate(record["questions"]):
-                if self.has_question_history(q):
-                    score = q.get("score", "") or "未评分"
-                    detail.append(f"{index + 1}. {QUESTION_TITLES[index + 1]}：{score}")
-            text = "；".join(detail) if detail else "暂无批改记录"
-            ctk.CTkLabel(card.card, text=text, font=FONT_BODY, text_color=COLORS["muted"], anchor="w", wraplength=880, justify="left").grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 12), sticky="ew")
+        ctk.CTkLabel(window, text="材料匹配报告", font=FONT_TITLE, text_color=COLORS["text"]).grid(row=0, column=0, padx=22, pady=(20, 8), sticky="w")
+        box = ctk.CTkTextbox(window, font=FONT_BODY, fg_color=COLORS["card"], text_color=COLORS["text"], border_color=COLORS["line"], border_width=1, corner_radius=18)
+        box.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
+        box.insert("1.0", self.material_report_text())
+        box.configure(state="disabled")
 
     def export_scores(self):
         if not self.students:
@@ -1032,6 +1157,8 @@ class ReviewApp(ctk.CTk):
         self.current_index = 0
         self.material_folder = ""
         self.material_files = []
+        self.material_index = {}
+        self.material_report = self.empty_material_report()
         self.file_pattern = DEFAULT_PATTERN
         self.pattern_var.set("新规则：文件名包含学号 + 对应实践关键词即可自动匹配；旧命名规则仍兼容。")
         self.save_data()
