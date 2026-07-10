@@ -1,11 +1,10 @@
-build/
+﻿build/
 __pycache__/
 *.pyc
 *.pyo
 *.log
 
-# Legacy build outputs/specs kept out of the published repo.
-StudentReviewApp.spec
-学生材料批阅系统.spec
+# Local archived legacy files and obsolete build outputs.
+_archive/
 
 # Local data is stored under AppData, not in the repository.

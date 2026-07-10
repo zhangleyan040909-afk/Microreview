@@ -390,25 +390,43 @@ class ReviewApp(ctk.CTk):
         return self.students[self.current_index]
 
     def import_students(self):
-        path = filedialog.askopenfilename(title="选择学生名单 CSV", filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")])
+        path = filedialog.askopenfilename(title="\u9009\u62e9\u5b66\u751f\u540d\u5355 CSV", filetypes=[("CSV \u6587\u4ef6", "*.csv"), ("\u6240\u6709\u6587\u4ef6", "*.*")])
         if not path:
             return
         try:
             rows = self.read_csv(path)
             students = self.parse_students(rows)
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"导入失败：{exc}")
+            messagebox.showerror(APP_TITLE, f"\u5bfc\u5165\u5931\u8d25\uff1a{exc}")
             return
         if not students:
-            messagebox.showwarning(APP_TITLE, "没有识别到有效学生。")
+            messagebox.showwarning(APP_TITLE, "\u6ca1\u6709\u8bc6\u522b\u5230\u6709\u6548\u5b66\u751f\u3002")
             return
-        self.students = students
-        self.current_index = 0
-        for student in students:
-            self.ensure_record(student["id"])
+        before_count = len(self.students)
+        added_count, updated_count = self.merge_students(students)
+        if before_count == 0 and self.students:
+            self.current_index = 0
+        else:
+            self.current_index = max(0, min(self.current_index, len(self.students) - 1))
         self.save_data()
         self.refresh_all()
-        messagebox.showinfo(APP_TITLE, f"已导入 {len(students)} 名学生。")
+        messagebox.showinfo(APP_TITLE, f"\u5df2\u5408\u5e76\u5bfc\u5165 {len(students)} \u6761\u540d\u5355\u8bb0\u5f55\u3002\n\u65b0\u589e {added_count} \u4eba\uff0c\u66f4\u65b0 {updated_count} \u4eba\uff1b\u5f53\u524d\u5171 {len(self.students)} \u4eba\u3002")
+
+    def merge_students(self, incoming_students):
+        existing_by_id = {student["id"]: student for student in self.students}
+        added_count = 0
+        updated_count = 0
+        for student in incoming_students:
+            sid = student["id"]
+            if sid in existing_by_id:
+                existing_by_id[sid]["name"] = student["name"]
+                updated_count += 1
+            else:
+                self.students.append(student)
+                existing_by_id[sid] = student
+                added_count += 1
+            self.ensure_record(sid)
+        return added_count, updated_count
 
     def read_csv(self, path):
         for encoding in ("utf-8-sig", "gbk", "utf-16"):
