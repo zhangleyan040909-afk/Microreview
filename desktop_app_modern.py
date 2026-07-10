@@ -1,6 +1,7 @@
 ﻿import csv
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -134,10 +135,17 @@ class ReviewApp(ctk.CTk):
         self.material_folder = ""
         self.file_pattern = DEFAULT_PATTERN
         self.material_files = []
+        self.material_index = {}
         self.visible_student_indexes = []
+        self.student_item_frames = {}
+        self.student_item_summary_labels = {}
         self.expanded_grades = set()
         self.grade_state_initialized = False
         self.question_widgets = {}
+        self.save_after_id = None
+        self.search_after_id = None
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.load_data()
         self.show_splash()
@@ -253,7 +261,7 @@ class ReviewApp(ctk.CTk):
         self.student_count_label = ctk.CTkLabel(left, text="0 人", font=FONT_LATIN_SMALL, text_color=COLORS["muted"])
         self.student_count_label.grid(row=0, column=1, padx=(4, 18), pady=(22, 8), sticky="e")
         self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self.refresh_student_list())
+        self.search_var.trace_add("write", lambda *_: self.schedule_student_search())
         self.search_entry = ctk.CTkEntry(
             left, textvariable=self.search_var, placeholder_text="搜索姓名或学号",
             height=38, corner_radius=8, border_color=COLORS["line"], font=FONT_LATIN
@@ -342,6 +350,18 @@ class ReviewApp(ctk.CTk):
             "file_pattern": self.file_pattern,
         }
         data_file().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.save_after_id = None
+
+    def schedule_save_data(self, delay=700):
+        if self.save_after_id:
+            self.after_cancel(self.save_after_id)
+        self.save_after_id = self.after(delay, self.save_data)
+
+    def on_close(self):
+        if self.save_after_id:
+            self.after_cancel(self.save_after_id)
+            self.save_data()
+        self.destroy()
 
     def save_records(self):
         self.sync_material_submissions()
@@ -517,10 +537,8 @@ class ReviewApp(ctk.CTk):
         folder = filedialog.askdirectory(title="选择材料文件夹")
         if folder:
             self.material_folder = folder
-            self.index_material_files()
-            self.sync_material_submissions()
+            self.refresh_all(reindex_materials=True)
             self.save_data()
-            self.refresh_all()
 
     def sync_material_submissions(self):
         if not self.students or not self.material_files:
@@ -533,16 +551,35 @@ class ReviewApp(ctk.CTk):
 
     def index_material_files(self):
         self.material_files = []
+        self.material_index = {}
         if not self.material_folder or not Path(self.material_folder).exists():
             return
+        student_ids = {self.normalize_filename(student["id"]): student["id"] for student in self.students}
+        non_numeric_ids = {sid: original for sid, original in student_ids.items() if not sid.isdigit()}
         for root, _dirs, files in os.walk(self.material_folder):
             for name in files:
                 path = Path(root) / name
-                if path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                    self.material_files.append(path)
+                if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    continue
+                self.material_files.append(path)
+                normalized_name = self.normalize_filename(path.name)
+                candidate_ids = []
+                for token in re.findall(r"\d{4,}", normalized_name):
+                    if token in student_ids:
+                        candidate_ids.append(student_ids[token])
+                if non_numeric_ids:
+                    for sid, original in non_numeric_ids.items():
+                        if sid and sid in normalized_name:
+                            candidate_ids.append(original)
+                if not candidate_ids:
+                    continue
+                for original_id in set(candidate_ids):
+                    for number in range(1, QUESTION_COUNT + 1):
+                        if self.match_question_keywords(path.name, number):
+                            self.material_index.setdefault(original_id, {}).setdefault(number, path)
 
-    def refresh_all(self):
-        if self.material_folder:
+    def refresh_all(self, reindex_materials=True):
+        if self.material_folder and reindex_materials:
             self.index_material_files()
             self.sync_material_submissions()
         self.refresh_student_list()
@@ -581,7 +618,8 @@ class ReviewApp(ctk.CTk):
             visible_grades = set(grouped.keys())
         else:
             if not self.grade_state_initialized and grouped:
-                self.expanded_grades.add(sorted(grouped.keys(), reverse=True)[0])
+                if len(self.students) <= 500:
+                    self.expanded_grades.add(sorted(grouped.keys(), reverse=True)[0])
                 self.grade_state_initialized = True
             visible_grades = self.expanded_grades
 
@@ -630,6 +668,25 @@ class ReviewApp(ctk.CTk):
                     child.bind("<Leave>", lambda _e, frame=item, act=active: self.hover_card(frame, False, act))
                 row += 1
 
+    def schedule_student_search(self):
+        if self.search_after_id:
+            self.after_cancel(self.search_after_id)
+        self.search_after_id = self.after(220, self.refresh_student_list)
+
+    def update_student_row_style(self, index, active):
+        frame = self.student_item_frames.get(index)
+        if not frame:
+            return
+        frame.configure(fg_color="#EAF2FF" if active else COLORS["card"], border_color=COLORS["primary"] if active else "#EEF2F7")
+
+    def update_student_row_summary(self, index):
+        if index not in self.student_item_summary_labels or index >= len(self.students):
+            return
+        student = self.students[index]
+        required, optional = self.completion(student["id"])
+        total = self.total_score(student["id"])
+        self.student_item_summary_labels[index].configure(text=f"??{required}/3 ? ??{optional}/5 ? {total:g}?")
+
     def toggle_grade(self, grade):
         if grade in self.expanded_grades:
             self.expanded_grades.remove(grade)
@@ -643,10 +700,15 @@ class ReviewApp(ctk.CTk):
         frame.configure(fg_color="#F1F7FF" if entering else COLORS["card_soft"])
 
     def select_student(self, index):
+        previous_index = self.current_index
         self.current_index = index
-        self.save_data()
+        self.schedule_save_data()
+        self.update_student_row_style(previous_index, False)
+        self.update_student_row_style(index, True)
         self.animate_current_card()
-        self.refresh_all()
+        self.refresh_current()
+        self.refresh_questions()
+        self.refresh_summary()
 
     def animate_current_card(self):
         self.current_label.configure(text_color=COLORS["primary"])
@@ -756,23 +818,17 @@ class ReviewApp(ctk.CTk):
                 score_var.set("")
         record = self.ensure_record(student["id"])
         record["questions"][index] = {"submitted": bool(submitted.get()), "score": score, "note": note.get().strip()}
-        self.save_data()
-        self.refresh_student_list()
+        self.schedule_save_data()
+        self.update_student_row_summary(self.current_index)
         self.refresh_summary()
 
     def prev_student(self):
         if self.students:
-            self.current_index = max(0, self.current_index - 1)
-            self.save_data()
-            self.animate_current_card()
-            self.refresh_all()
+            self.select_student(max(0, self.current_index - 1))
 
     def next_student(self):
         if self.students:
-            self.current_index = min(len(self.students) - 1, self.current_index + 1)
-            self.save_data()
-            self.animate_current_card()
-            self.refresh_all()
+            self.select_student(min(len(self.students) - 1, self.current_index + 1))
 
     def update_pattern(self):
         self.file_pattern = DEFAULT_PATTERN
@@ -811,15 +867,22 @@ class ReviewApp(ctk.CTk):
     def find_file_for_student(self, student, question_number):
         if not student:
             return None
-        sid = self.normalize_filename(student["id"])
+        indexed = self.material_index.get(student["id"], {}).get(question_number)
+        if indexed:
+            return indexed
 
+        sid = self.normalize_filename(student["id"])
         for path in self.material_files:
             normalized_name = self.normalize_filename(path.name)
             if sid in normalized_name and self.match_question_keywords(path.name, question_number):
+                self.material_index.setdefault(student["id"], {})[question_number] = path
                 return path
 
         keyword = self.build_keyword(question_number, student)
-        return next((path for path in self.material_files if keyword and keyword in path.name.lower()), None)
+        matched = next((path for path in self.material_files if keyword and keyword in path.name.lower()), None)
+        if matched:
+            self.material_index.setdefault(student["id"], {})[question_number] = matched
+        return matched
 
     def find_file(self, question_number):
         return self.find_file_for_student(self.current_student(), question_number)
