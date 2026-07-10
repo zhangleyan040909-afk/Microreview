@@ -143,7 +143,8 @@ class ReviewApp(ctk.CTk):
         self.student_item_summary_labels = {}
         self.student_list_rows = []
         self.student_list_offset = 0
-        self.student_scroll_label = None
+        self.student_row_widgets = []
+        self.student_row_indexes = {}
         self.material_indexing = False
         self.material_scan_token = 0
         self.expanded_grades = set()
@@ -275,11 +276,10 @@ class ReviewApp(ctk.CTk):
         )
         self.search_entry.grid(row=1, column=0, columnspan=2, padx=18, pady=(8, 14), sticky="ew")
         self.student_list_frame = ctk.CTkFrame(left, fg_color=COLORS["card"], corner_radius=0)
-        self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="nsew")
+        self.student_list_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 12), sticky="nsew")
         self.student_list_frame.grid_columnconfigure(0, weight=1)
         self.student_list_frame.bind("<MouseWheel>", self.on_student_mousewheel)
-        self.student_scroll_label = ctk.CTkLabel(left, text="\u9f20\u6807\u6eda\u8f6e\u6ed1\u52a8", font=FONT_SMALL, text_color=COLORS["muted"])
-        self.student_scroll_label.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
+        self.build_student_row_pool()
 
         center = ctk.CTkFrame(self, fg_color=COLORS["bg"], corner_radius=0)
         center.grid(row=1, column=1, sticky="nsew")
@@ -692,59 +692,80 @@ class ReviewApp(ctk.CTk):
     def max_student_offset(self):
         return max(0, len(self.student_list_rows) - STUDENT_PAGE_SIZE)
 
+    def build_student_row_pool(self):
+        if self.student_row_widgets:
+            return
+        for row in range(STUDENT_PAGE_SIZE):
+            button = ctk.CTkButton(
+                self.student_list_frame,
+                text="",
+                anchor="w",
+                height=34,
+                corner_radius=10,
+                fg_color=COLORS["card"],
+                hover_color="#EAF2FF",
+                text_color=COLORS["text"],
+                font=FONT_LATIN,
+                border_width=1,
+                border_color="#EEF2F7",
+                command=lambda: None,
+            )
+            button.grid(row=row, column=0, sticky="ew", pady=2, padx=(8, 2))
+            button.bind("<MouseWheel>", self.on_student_mousewheel)
+            self.student_row_widgets.append(button)
+
     def render_student_page(self):
-        for widget in self.student_list_frame.winfo_children():
-            widget.destroy()
+        self.build_student_row_pool()
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
-        total = len(self.student_list_rows)
-        if self.student_scroll_label:
-            if total:
-                self.student_scroll_label.configure(text=f"\u663e\u793a {self.student_list_offset + 1}-{min(self.student_list_offset + STUDENT_PAGE_SIZE, total)} / {total}    \u9f20\u6807\u6eda\u8f6e\u6ed1\u52a8")
-            else:
-                self.student_scroll_label.configure(text="\u6682\u65e0\u5b66\u751f")
+        self.student_row_indexes = {}
         start = self.student_list_offset
         end = min(start + STUDENT_PAGE_SIZE, len(self.student_list_rows))
-        for row, item_data in enumerate(self.student_list_rows[start:end]):
+        visible_rows = self.student_list_rows[start:end]
+
+        for row, button in enumerate(self.student_row_widgets):
+            if row >= len(visible_rows):
+                button.grid_remove()
+                continue
+            button.grid()
+            item_data = visible_rows[row]
             if item_data[0] == "grade":
                 _kind, grade, count, expanded = item_data
-                arrow = "\u25be" if expanded else "\u25b8"
-                header = ctk.CTkButton(
-                    self.student_list_frame,
-                    text=f"{arrow}  {grade}    {count}\u4eba",
+                arrow = "▾" if expanded else "▸"
+                button.configure(
+                    text=f"{arrow}  {grade}    {count}人",
                     command=lambda g=grade: self.toggle_grade(g),
-                    anchor="w",
-                    height=42,
-                    corner_radius=14,
+                    height=40,
                     fg_color="#F3F7FD",
                     hover_color="#EAF2FF",
                     text_color=COLORS["text"],
                     font=FONT_LATIN_SECTION,
-                    border_width=1,
                     border_color=COLORS["line"],
                 )
-                header.grid(row=row, column=0, sticky="ew", pady=(4, 3), padx=2)
-                header.bind("<MouseWheel>", self.on_student_mousewheel)
+                button.grid_configure(padx=2, pady=(4, 3))
                 continue
 
             _kind, index, student = item_data
             active = index == self.current_index
-            fg = "#EAF2FF" if active else COLORS["card"]
-            border = COLORS["primary"] if active else "#EEF2F7"
-            item = ctk.CTkFrame(self.student_list_frame, fg_color=fg, corner_radius=10, border_width=1, border_color=border)
-            item.grid(row=row, column=0, sticky="ew", pady=2, padx=(12, 2))
-            item.grid_columnconfigure(0, weight=1)
-            ctk.CTkLabel(item, text=f"{student['name']}  {student['id']}", font=FONT_LATIN, text_color=COLORS["text"], anchor="w").grid(row=0, column=0, padx=10, pady=8, sticky="ew")
-            self.student_item_frames[index] = item
-            for child in (item, *item.winfo_children()):
-                child.bind("<Button-1>", lambda _e, idx=index: self.select_student(idx))
-                child.bind("<MouseWheel>", self.on_student_mousewheel)
+            button.configure(
+                text=f"{student['name']}  {student['id']}",
+                command=lambda idx=index: self.select_student(idx),
+                height=34,
+                fg_color="#EAF2FF" if active else COLORS["card"],
+                hover_color="#F1F7FF",
+                text_color=COLORS["text"],
+                font=FONT_LATIN,
+                border_color=COLORS["primary"] if active else "#EEF2F7",
+            )
+            button.grid_configure(padx=(12, 2), pady=2)
+            self.student_item_frames[index] = button
+            self.student_row_indexes[index] = row
 
     def on_student_mousewheel(self, event):
         if not self.student_list_rows:
             return
         step = -1 if event.delta > 0 else 1
-        next_offset = max(0, min(self.student_list_offset + step * 3, self.max_student_offset()))
+        next_offset = max(0, min(self.student_list_offset + step, self.max_student_offset()))
         if next_offset != self.student_list_offset:
             self.student_list_offset = next_offset
             self.render_student_page()
