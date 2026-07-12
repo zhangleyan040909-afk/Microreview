@@ -138,6 +138,7 @@ class ReviewApp(ctk.CTk):
         self.material_files = []
         self.material_index = {}
         self.material_report = self.empty_material_report()
+        self.pending_review_ids = set()
         self.visible_student_indexes = []
         self.student_item_frames = {}
         self.student_item_summary_labels = {}
@@ -408,6 +409,7 @@ class ReviewApp(ctk.CTk):
         self.material_files = []
         self.material_index = {}
         self.material_report = self.empty_material_report()
+        self.pending_review_ids = set()
         self.expanded_grades = set()
         self.grade_state_initialized = False
         self.save_data()
@@ -647,6 +649,7 @@ class ReviewApp(ctk.CTk):
         self.material_files = []
         self.material_index = {}
         self.material_report = self.empty_material_report()
+        self.rebuild_pending_review_cache()
         self.folder_label.configure(text="\u6b63\u5728\u540e\u53f0\u5339\u914d\u6750\u6599\uff0c\u8bf7\u7a0d\u5019...")
         students_snapshot = [dict(student) for student in self.students]
 
@@ -672,6 +675,7 @@ class ReviewApp(ctk.CTk):
         self.material_index = material_index
         self.material_report = report
         self.sync_material_submissions()
+        self.rebuild_pending_review_cache()
         self.save_data()
         self.refresh_student_list()
         self.refresh_current()
@@ -682,6 +686,7 @@ class ReviewApp(ctk.CTk):
     def refresh_all(self, reindex_materials=False):
         if self.material_folder and reindex_materials:
             self.start_material_indexing(self.material_folder)
+        self.rebuild_pending_review_cache()
         self.refresh_student_list()
         self.refresh_current()
         self.refresh_questions()
@@ -778,6 +783,7 @@ class ReviewApp(ctk.CTk):
                 row += 1
 
     def on_pending_filter_changed(self):
+        self.rebuild_pending_review_cache()
         if self.pending_only_var.get():
             pending_index = self.next_pending_index(start=-1, wrap=False)
             if pending_index is not None:
@@ -917,6 +923,7 @@ class ReviewApp(ctk.CTk):
         student = self.current_student()
         if not student or index not in self.question_widgets:
             return
+        was_pending = self.is_pending_review(student)
         submitted, score_var, note = self.question_widgets[index]
         score = score_var.get().strip()
         if score:
@@ -932,10 +939,12 @@ class ReviewApp(ctk.CTk):
                 score_var.set("")
         record = self.ensure_record(student["id"])
         record["questions"][index] = {"submitted": bool(submitted.get()), "score": score, "note": note.get().strip()}
+        self.set_pending_review_status(student)
+        is_pending = self.is_pending_review(student)
         self.schedule_save_data()
         self.update_student_row_summary(self.current_index)
         self.refresh_summary()
-        if getattr(self, "pending_only_var", None) and self.pending_only_var.get():
+        if getattr(self, "pending_only_var", None) and self.pending_only_var.get() and was_pending != is_pending:
             self.refresh_student_list()
 
     def prev_student(self):
@@ -981,7 +990,7 @@ class ReviewApp(ctk.CTk):
     def has_question_history(self, question):
         return bool(question.get("submitted") or str(question.get("score", "")).strip() or str(question.get("note", "")).strip())
 
-    def is_pending_review(self, student):
+    def calculate_pending_review(self, student):
         record = self.ensure_record(student["id"])
         matched_numbers = set(self.material_index.get(student["id"], {}).keys())
         for index, question in enumerate(record["questions"]):
@@ -990,6 +999,23 @@ class ReviewApp(ctk.CTk):
             if visible and not str(question.get("score", "")).strip():
                 return True
         return False
+
+    def rebuild_pending_review_cache(self):
+        self.pending_review_ids = {
+            student["id"]
+            for student in self.students
+            if self.calculate_pending_review(student)
+        }
+
+    def set_pending_review_status(self, student):
+        sid = student["id"]
+        if self.calculate_pending_review(student):
+            self.pending_review_ids.add(sid)
+        else:
+            self.pending_review_ids.discard(sid)
+
+    def is_pending_review(self, student):
+        return student["id"] in self.pending_review_ids
 
     def next_pending_index(self, start=None, wrap=True):
         if not self.students:
@@ -1159,6 +1185,7 @@ class ReviewApp(ctk.CTk):
         self.material_files = []
         self.material_index = {}
         self.material_report = self.empty_material_report()
+        self.pending_review_ids = set()
         self.file_pattern = DEFAULT_PATTERN
         self.pattern_var.set("新规则：文件名包含学号 + 对应实践关键词即可自动匹配；旧命名规则仍兼容。")
         self.save_data()
