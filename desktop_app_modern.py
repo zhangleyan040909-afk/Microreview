@@ -704,16 +704,15 @@ class ReviewApp(ctk.CTk):
             return f"20{prefix}级"
         return "其他"
 
-    def refresh_student_list(self):
-        for widget in self.student_list_frame.winfo_children():
-            widget.destroy()
-        self.visible_student_indexes = []
-        self.student_item_frames = {}
-        self.student_item_summary_labels = {}
+    def student_filter_state(self):
         keyword = self.search_var.get().strip().lower() if hasattr(self, "search_var") else ""
         pending_var = getattr(self, "pending_only_var", None)
         pending_only = bool(pending_var.get()) if pending_var else False
+        return keyword, pending_only
 
+    def grouped_student_indexes(self, keyword=None, pending_only=None):
+        if keyword is None or pending_only is None:
+            keyword, pending_only = self.student_filter_state()
         grouped = {}
         visible_count = 0
         for index, student in enumerate(self.students):
@@ -726,6 +725,43 @@ class ReviewApp(ctk.CTk):
             grade = self.grade_key(student)
             grouped.setdefault(grade, []).append((index, student))
             visible_count += 1
+        return grouped, visible_count
+
+    def ordered_student_indexes(self, keyword=None, pending_only=None):
+        grouped, _visible_count = self.grouped_student_indexes(keyword, pending_only)
+        ordered = []
+        for grade in sorted(grouped.keys(), reverse=True):
+            ordered.extend(index for index, _student in grouped[grade])
+        return ordered
+
+    def next_index_in_order(self, order, current_index, wrap=False):
+        if not order:
+            return None
+        if current_index not in order:
+            return order[0]
+        position = order.index(current_index)
+        if position + 1 < len(order):
+            return order[position + 1]
+        return order[0] if wrap else None
+
+    def previous_index_in_order(self, order, current_index, wrap=False):
+        if not order:
+            return None
+        if current_index not in order:
+            return order[-1]
+        position = order.index(current_index)
+        if position > 0:
+            return order[position - 1]
+        return order[-1] if wrap else None
+
+    def refresh_student_list(self):
+        for widget in self.student_list_frame.winfo_children():
+            widget.destroy()
+        self.visible_student_indexes = []
+        self.student_item_frames = {}
+        self.student_item_summary_labels = {}
+        keyword, pending_only = self.student_filter_state()
+        grouped, visible_count = self.grouped_student_indexes(keyword, pending_only)
         if pending_only:
             self.student_count_label.configure(text=f"{visible_count}/{len(self.students)} \u4eba")
         else:
@@ -785,7 +821,8 @@ class ReviewApp(ctk.CTk):
     def on_pending_filter_changed(self):
         self.rebuild_pending_review_cache()
         if self.pending_only_var.get():
-            pending_index = self.next_pending_index(start=-1, wrap=False)
+            order = self.ordered_student_indexes()
+            pending_index = order[0] if order else None
             if pending_index is not None:
                 self.expanded_grades.add(self.grade_key(self.students[pending_index]))
                 self.select_student(pending_index)
@@ -949,20 +986,25 @@ class ReviewApp(ctk.CTk):
 
     def prev_student(self):
         if self.students:
-            self.select_student(max(0, self.current_index - 1))
+            order = self.ordered_student_indexes()
+            previous_index = self.previous_index_in_order(order, self.current_index, wrap=False)
+            if previous_index is None:
+                return
+            self.expanded_grades.add(self.grade_key(self.students[previous_index]))
+            self.select_student(previous_index)
+            self.refresh_student_list()
 
     def next_student(self):
         if self.students:
-            if getattr(self, "pending_only_var", None) and self.pending_only_var.get():
-                pending_index = self.next_pending_index(start=self.current_index, wrap=True)
-                if pending_index is None:
-                    messagebox.showinfo(APP_TITLE, "当前没有待批改学生。")
-                    return
-                self.expanded_grades.add(self.grade_key(self.students[pending_index]))
-                self.select_student(pending_index)
-                self.refresh_student_list()
+            order = self.ordered_student_indexes()
+            next_index = self.next_index_in_order(order, self.current_index, wrap=False)
+            if next_index is None:
+                message = "当前已经是最后一位待批改学生。" if getattr(self, "pending_only_var", None) and self.pending_only_var.get() else "当前已经是最后一位学生。"
+                messagebox.showinfo(APP_TITLE, message)
                 return
-            self.select_student(min(len(self.students) - 1, self.current_index + 1))
+            self.expanded_grades.add(self.grade_key(self.students[next_index]))
+            self.select_student(next_index)
+            self.refresh_student_list()
 
     def update_pattern(self):
         self.file_pattern = DEFAULT_PATTERN
@@ -1016,19 +1058,6 @@ class ReviewApp(ctk.CTk):
 
     def is_pending_review(self, student):
         return student["id"] in self.pending_review_ids
-
-    def next_pending_index(self, start=None, wrap=True):
-        if not self.students:
-            return None
-        start = self.current_index if start is None else start
-        ranges = [range(start + 1, len(self.students))]
-        if wrap:
-            ranges.append(range(0, min(start, len(self.students))))
-        for indexes in ranges:
-            for index in indexes:
-                if self.is_pending_review(self.students[index]):
-                    return index
-        return None
 
     def visible_questions_for_student(self, student, record):
         visible = []
