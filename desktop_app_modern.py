@@ -149,6 +149,7 @@ class ReviewApp(ctk.CTk):
         self.question_widgets = {}
         self.save_after_id = None
         self.search_after_id = None
+        self.pending_roster_refresh_needed = False
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -755,6 +756,7 @@ class ReviewApp(ctk.CTk):
         return order[-1] if wrap else None
 
     def refresh_student_list(self):
+        self.pending_roster_refresh_needed = False
         for widget in self.student_list_frame.winfo_children():
             widget.destroy()
         self.visible_student_indexes = []
@@ -819,6 +821,7 @@ class ReviewApp(ctk.CTk):
                 row += 1
 
     def on_pending_filter_changed(self):
+        self.pending_roster_refresh_needed = False
         self.rebuild_pending_review_cache()
         if self.pending_only_var.get():
             order = self.ordered_student_indexes()
@@ -982,11 +985,11 @@ class ReviewApp(ctk.CTk):
         self.update_student_row_summary(self.current_index)
         self.refresh_summary()
         if getattr(self, "pending_only_var", None) and self.pending_only_var.get() and was_pending != is_pending:
-            self.refresh_student_list()
+            self.pending_roster_refresh_needed = True
 
     def prev_student(self):
         if self.students:
-            order = self.ordered_student_indexes()
+            order = list(self.visible_student_indexes) if self.visible_student_indexes else self.ordered_student_indexes()
             previous_index = self.previous_index_in_order(order, self.current_index, wrap=False)
             if previous_index is None:
                 return
@@ -996,9 +999,11 @@ class ReviewApp(ctk.CTk):
 
     def next_student(self):
         if self.students:
-            order = self.ordered_student_indexes()
+            order = list(self.visible_student_indexes) if self.visible_student_indexes else self.ordered_student_indexes()
             next_index = self.next_index_in_order(order, self.current_index, wrap=False)
             if next_index is None:
+                if self.pending_roster_refresh_needed:
+                    self.refresh_student_list()
                 message = "当前已经是最后一位待批改学生。" if getattr(self, "pending_only_var", None) and self.pending_only_var.get() else "当前已经是最后一位学生。"
                 messagebox.showinfo(APP_TITLE, message)
                 return
